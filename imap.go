@@ -10,6 +10,25 @@ import (
 )
 
 func runReadEmails(limit int) (*mcp.CallToolResult, any, error) {
+    return fetchMessages("INBOX", limit)
+}
+
+func runReadNotes(limit int) (*mcp.CallToolResult, any, error) {
+    // Attempt to read from "Notes" mailbox
+    result, _, err := fetchMessages("Notes", limit)
+    if err != nil {
+        return &mcp.CallToolResult{
+            Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Failed to read notes: %v. \n\nNote: Modern iCloud Notes are not accessible via IMAP. This tool only retrieves legacy notes.", err)}},
+            IsError: true,
+        }, nil, nil
+    }
+
+    return &mcp.CallToolResult{
+        Content: []mcp.Content{&mcp.TextContent{Text: "Legacy Notes (Modern iCloud Notes are not accessible via IMAP):\n\n" + result.Content[0].(*mcp.TextContent).Text}},
+    }, nil, nil
+}
+
+func fetchMessages(mailbox string, limit int) (*mcp.CallToolResult, any, error) {
     if limit <= 0 {
         limit = 10
     }
@@ -29,9 +48,8 @@ func runReadEmails(limit int) (*mcp.CallToolResult, any, error) {
         }, nil, nil
     }
 
-    log.Println("Connecting to server...")
+    log.Printf("Connecting to IMAP server to fetch %s...", mailbox)
 
-    // Connect to server
     c, err := client.DialTLS("imap.mail.me.com:993", nil)
     if err != nil {
         return &mcp.CallToolResult{
@@ -41,7 +59,6 @@ func runReadEmails(limit int) (*mcp.CallToolResult, any, error) {
     }
     defer c.Logout()
 
-    // Login
     if err := c.Login(email, password); err != nil {
         return &mcp.CallToolResult{
             Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Failed to login to IMAP: %v", err)}},
@@ -49,16 +66,14 @@ func runReadEmails(limit int) (*mcp.CallToolResult, any, error) {
         }, nil, nil
     }
 
-    // Select INBOX
-    mbox, err := c.Select("INBOX", false)
+    mbox, err := c.Select(mailbox, false)
     if err != nil {
         return &mcp.CallToolResult{
-            Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Failed to select INBOX: %v", err)}},
+            Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Failed to select mailbox '%s': %v. It might not exist.", mailbox, err)}},
             IsError: true,
         }, nil, nil
     }
 
-    // Get the last N messages
     from := uint32(1)
     if mbox.Messages > uint32(limit) {
         from = mbox.Messages - uint32(limit) + 1
@@ -66,7 +81,7 @@ func runReadEmails(limit int) (*mcp.CallToolResult, any, error) {
     to := mbox.Messages
     if from > to {
         return &mcp.CallToolResult{
-            Content: []mcp.Content{&mcp.TextContent{Text: "No emails found"}},
+            Content: []mcp.Content{&mcp.TextContent{Text: "No messages found"}},
         }, nil, nil
     }
 
@@ -76,12 +91,12 @@ func runReadEmails(limit int) (*mcp.CallToolResult, any, error) {
     messages := make(chan *imap.Message, 10)
     done := make(chan error, 1)
     go func() {
-        done <- c.Fetch(seqset, []imap.FetchItem{imap.FetchEnvelope}, messages)
+        done <- c.Fetch(seqset, []imap.FetchItem{imap.FetchEnvelope, "BODY[TEXT]"}, messages)
     }()
 
     var result string
     for msg := range messages {
-        result += fmt.Sprintf("Subject: %s\nFrom: %v\nDate: %v\n---\n", msg.Envelope.Subject, msg.Envelope.From, msg.Envelope.Date)
+        result += fmt.Sprintf("Subject: %s\nDate: %v\n---\n", msg.Envelope.Subject, msg.Envelope.Date)
     }
 
     if err := <-done; err != nil {

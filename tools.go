@@ -52,7 +52,7 @@ func registerTools(server *mcp.Server) {
 
     mcp.AddTool(server, &mcp.Tool{
         Name: "list_calendar_events",
-        Description: "List calendar events. Requires ICLOUD_EMAIL and ICLOUD_PASSWORD (app-specific).",
+        Description: "List calendar events. Requires ICLOUD_CALDAV_URL pointing to a specific calendar collection.",
         InputSchema: map[string]any{
             "type": "object",
             "properties": map[string]any{
@@ -77,7 +77,27 @@ func registerTools(server *mcp.Server) {
         },
     }, handleCreateReminder)
 
-    // Notes Tools (Experimental)
+    mcp.AddTool(server, &mcp.Tool{
+        Name: "list_reminders",
+        Description: "List reminders. Requires ICLOUD_REMINDERS_URL (or ICLOUD_CALDAV_URL) pointing to a reminders collection.",
+        InputSchema: map[string]any{
+            "type": "object",
+            "properties": map[string]any{},
+        },
+    }, handleListReminders)
+
+    // Notes Tools
+    mcp.AddTool(server, &mcp.Tool{
+        Name: "read_notes",
+        Description: "Read Notes from the 'Notes' IMAP folder. Only works for legacy notes.",
+        InputSchema: map[string]any{
+             "type": "object",
+             "properties": map[string]any{
+                 "limit": map[string]any{"type": "integer", "description": "Number of notes to fetch (default 10)"},
+             },
+        },
+    }, handleReadNotes)
+
     mcp.AddTool(server, &mcp.Tool{
         Name: "create_note",
         Description: "Create a note (Experimental/Not fully supported).",
@@ -108,6 +128,12 @@ func handleCreateNote(ctx context.Context, req *mcp.CallToolRequest, args struct
         },
         IsError: true,
     }, nil, nil
+}
+
+func handleReadNotes(ctx context.Context, req *mcp.CallToolRequest, args struct {
+    Limit int `json:"limit"`
+}) (*mcp.CallToolResult, any, error) {
+    return runReadNotes(args.Limit)
 }
 
 // Placeholders for other handlers to allow compilation
@@ -145,4 +171,8 @@ func handleCreateReminder(ctx context.Context, req *mcp.CallToolRequest, args st
     DueDate string `json:"due_date"`
 }) (*mcp.CallToolResult, any, error) {
     return runCreateReminder(args.Title, args.DueDate)
+}
+
+func handleListReminders(ctx context.Context, req *mcp.CallToolRequest, args struct{}) (*mcp.CallToolResult, any, error) {
+    return runListReminders()
 }

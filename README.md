@@ -7,9 +7,9 @@ An [MCP](https://modelcontextprotocol.io/) server implementation for iCloud serv
 | Feature | Status | Description |
 | :--- | :--- | :--- |
 | **Email** | ✅ Fully Supported | Send emails (SMTP) and read recent emails (IMAP). |
-| **Calendar** | ⚠️ Partial | Generates valid iCalendar (`.ics`) objects for events. Direct syncing requires a specific `ICLOUD_CALDAV_URL` as auto-discovery is not fully implemented. |
-| **Reminders** | ⚠️ Partial | Generates valid VTODO objects. Same limitation as Calendar for syncing. |
-| **Notes** | ❌ Not Supported | iCloud Notes does not have a public API. This tool returns a placeholder message. |
+| **Calendar** | ⚠️ Partial | Generates valid iCalendar (`.ics`) objects for events. Direct syncing/listing requires a specific `ICLOUD_CALDAV_URL`. |
+| **Reminders** | ⚠️ Partial | Generates valid VTODO objects. Listing reminders requires `ICLOUD_REMINDERS_URL`. |
+| **Notes** | ⚠️ Legacy Only | Reading notes is limited to the legacy "Notes" IMAP folder. Modern iCloud Notes are not supported. |
 
 ## Safety & Security
 
@@ -46,7 +46,8 @@ Set the following environment variables:
 
 *   `ICLOUD_EMAIL`: Your iCloud email address (e.g., `user@icloud.com`).
 *   `ICLOUD_PASSWORD`: Your App-Specific Password (format: `xxxx-xxxx-xxxx-xxxx`).
-*   `ICLOUD_CALDAV_URL` (Optional): The direct URL to your specific calendar if you want to attempt direct syncing. Otherwise, the tools will generate iCal data for you to use manually.
+*   `ICLOUD_CALDAV_URL` (Optional): The direct URL to your specific calendar collection (e.g., `https://caldav.icloud.com/1234567/calendars/work/`).
+*   `ICLOUD_REMINDERS_URL` (Optional): The direct URL to your specific reminders collection.
 
 ### Running with Claude Desktop (or other MCP Clients)
 
@@ -72,11 +73,14 @@ Add the server to your MCP configuration (e.g., `claude_desktop_config.json`):
     *   Args: `to`, `subject`, `body`
 *   `read_emails`: Fetch recent emails.
     *   Args: `limit` (default 10)
+*   `read_notes`: Fetch legacy notes from IMAP.
+    *   Args: `limit` (default 10)
 *   `create_calendar_event`: Generate an iCalendar event.
     *   Args: `summary`, `start_time` (RFC3339), `duration_minutes`
 *   `list_calendar_events`: List events (Requires `ICLOUD_CALDAV_URL`).
 *   `create_reminder`: Generate a Reminder (VTODO).
     *   Args: `title`, `due_date` (optional)
+*   `list_reminders`: List reminders (Requires `ICLOUD_REMINDERS_URL`).
 *   `create_note`: (Experimental) Placeholder for Notes creation.
 
 ## License

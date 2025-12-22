@@ -6,6 +6,7 @@ import (
     "time"
     "bytes"
     "os"
+    "context"
 
 	"github.com/emersion/go-webdav/caldav"
     "github.com/emersion/go-webdav"
@@ -26,7 +27,7 @@ func (t *basicAuthTransport) RoundTrip(req *http.Request) (*http.Response, error
     return t.Base.RoundTrip(req)
 }
 
-func getCalDAVClient() (*caldav.Client, error) {
+func getCalDAVClient(urlEnv string) (*caldav.Client, error) {
     email, err := getEnv("ICLOUD_EMAIL")
     if err != nil {
         return nil, err
@@ -44,7 +45,7 @@ func getCalDAVClient() (*caldav.Client, error) {
         },
     }
 
-    url := os.Getenv("ICLOUD_CALDAV_URL")
+    url := os.Getenv(urlEnv)
     if url == "" {
         url = "https://caldav.icloud.com/"
     }
@@ -66,20 +67,20 @@ func runCreateCalendarEvent(summary, startTime string, durationMinutes int) (*mc
     }
 
     end := start.Add(time.Duration(durationMinutes) * time.Minute)
+    uid := uuid.NewString()
 
     // Create VEVENT
     event := ical.NewEvent()
     event.Props.SetText(ical.PropSummary, summary)
     event.Props.SetDateTime(ical.PropDateTimeStart, start)
     event.Props.SetDateTime(ical.PropDateTimeEnd, end)
-    event.Props.SetText(ical.PropUID, uuid.NewString())
+    event.Props.SetText(ical.PropUID, uid)
 
     cal := ical.NewCalendar()
     cal.Props.SetText(ical.PropVersion, "2.0")
     cal.Props.SetText(ical.PropProductID, "-//Jules//iCloud MCP//EN")
     cal.Children = append(cal.Children, event.Component)
 
-    // Encode
     var buf bytes.Buffer
     enc := ical.NewEncoder(&buf)
     if err := enc.Encode(cal); err != nil {
@@ -89,13 +90,24 @@ func runCreateCalendarEvent(summary, startTime string, durationMinutes int) (*mc
         }, nil, nil
     }
 
+    // Tentative: If we wanted to upload, we would need to construct the path.
+    // client.PutCalendarObject(context.Background(), path, &buf, options)
+    // But without knowing the correct collection path, this often fails.
+
     return &mcp.CallToolResult{
-        Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Generated iCalendar object:\n%s\n\nNote: To actually save this to iCloud, the server needs to discover the specific calendar URL, which requires authentication and discovery logic that is difficult to automate blindly. Please verify if your environment supports CalDAV discovery.", buf.String())}},
+        Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Generated iCalendar object:\n%s\n\nNote: Event generated locally. To upload, manual action or precise CalDAV URL configuration is required.", buf.String())}},
     }, nil, nil
 }
 
 func runListCalendarEvents(startTime, endTime string) (*mcp.CallToolResult, any, error) {
-    client, err := getCalDAVClient()
+    // Check if ICLOUD_CALDAV_URL is set before trying to connect
+    if os.Getenv("ICLOUD_CALDAV_URL") == "" {
+         return &mcp.CallToolResult{
+            Content: []mcp.Content{&mcp.TextContent{Text: "Please configure ICLOUD_CALDAV_URL to a specific calendar to list events."}},
+        }, nil, nil
+    }
+
+    client, err := getCalDAVClient("ICLOUD_CALDAV_URL")
     if err != nil {
         return &mcp.CallToolResult{
             Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Client error: %v", err)}},
@@ -103,10 +115,71 @@ func runListCalendarEvents(startTime, endTime string) (*mcp.CallToolResult, any,
         }, nil, nil
     }
 
-    _ = client
+    // Construct query for VEVENT
+    query := &caldav.CalendarQuery{
+        CompRequest: caldav.CalendarCompRequest{
+            Name: "VCALENDAR",
+            Comps: []caldav.CalendarCompRequest{
+                {
+                    Name: "VEVENT",
+                    Props: []string{"SUMMARY", "DTSTART", "DTEND", "UID", "DESCRIPTION", "LOCATION"},
+                },
+            },
+        },
+        CompFilter: caldav.CompFilter{
+            Name: "VCALENDAR",
+            Comps: []caldav.CompFilter{
+                {
+                    Name: "VEVENT",
+                },
+            },
+        },
+    }
+
+    // Add time range filter if possible
+    start, errS := time.Parse(time.RFC3339, startTime)
+    end, errE := time.Parse(time.RFC3339, endTime)
+
+    if errS == nil && errE == nil {
+         // Modify the VEVENT filter
+         query.CompFilter.Comps[0].Start = start
+         query.CompFilter.Comps[0].End = end
+    }
+
+    objs, err := client.QueryCalendar(context.Background(), "", query)
+    if err != nil {
+        return &mcp.CallToolResult{
+            Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Failed to query events: %v. Ensure ICLOUD_CALDAV_URL points to a Calendar collection.", err)}},
+            IsError: true,
+        }, nil, nil
+    }
+
+    var result string
+    for _, obj := range objs {
+        result += fmt.Sprintf("Event found at: %s\n", obj.Path)
+
+        if obj.Data != nil {
+             for _, child := range obj.Data.Children {
+                 if child.Name == "VEVENT" {
+                     summary := child.Props.Get(ical.PropSummary)
+                     if summary != nil {
+                         result += fmt.Sprintf("  Summary: %s\n", summary.Value)
+                     }
+                     dtstart := child.Props.Get(ical.PropDateTimeStart)
+                     if dtstart != nil {
+                         result += fmt.Sprintf("  Start: %s\n", dtstart.Value)
+                     }
+                 }
+             }
+        }
+    }
+
+    if result == "" {
+        result = "No events found in the specified range."
+    }
 
     return &mcp.CallToolResult{
-        Content: []mcp.Content{&mcp.TextContent{Text: "Listing events requires discovering the user's calendar home set. This is currently not fully implemented. Please ensure ICLOUD_CALDAV_URL points to a specific calendar if possible."}},
+        Content: []mcp.Content{&mcp.TextContent{Text: result}},
     }, nil, nil
 }
 
@@ -133,6 +206,80 @@ func runCreateReminder(title, dueDate string) (*mcp.CallToolResult, any, error) 
     _ = enc.Encode(cal)
 
     return &mcp.CallToolResult{
-        Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Generated VTODO object:\n%s\n\nNote: Same limitation as Calendar events regarding server path discovery.", buf.String())}},
+        Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Generated VTODO object:\n%s\n", buf.String())}},
+    }, nil, nil
+}
+
+func runListReminders() (*mcp.CallToolResult, any, error) {
+    // Check if separate Reminders URL is set, otherwise try default
+    if os.Getenv("ICLOUD_REMINDERS_URL") == "" && os.Getenv("ICLOUD_CALDAV_URL") == "" {
+         return &mcp.CallToolResult{
+            Content: []mcp.Content{&mcp.TextContent{Text: "Please configure ICLOUD_REMINDERS_URL (or ICLOUD_CALDAV_URL) to list reminders."}},
+        }, nil, nil
+    }
+
+    client, err := getCalDAVClient("ICLOUD_REMINDERS_URL")
+    if err != nil {
+        return &mcp.CallToolResult{
+             Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Client error: %v", err)}},
+             IsError: true,
+        }, nil, nil
+    }
+
+    // We would Query for VTODO
+    query := &caldav.CalendarQuery{
+        CompRequest: caldav.CalendarCompRequest{
+            Name: "VCALENDAR",
+            Comps: []caldav.CalendarCompRequest{
+                {
+                    Name: "VTODO",
+                    Props: []string{"SUMMARY", "DUE", "STATUS", "UID"},
+                },
+            },
+        },
+        CompFilter: caldav.CompFilter{
+            Name: "VCALENDAR",
+            Comps: []caldav.CompFilter{
+                {
+                    Name: "VTODO",
+                },
+            },
+        },
+    }
+
+    // Execute query
+    objs, err := client.QueryCalendar(context.Background(), "", query)
+    if err != nil {
+         return &mcp.CallToolResult{
+            Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Failed to query reminders: %v. Ensure the URL points to a Reminders collection.", err)}},
+            IsError: true,
+        }, nil, nil
+    }
+
+    var result string
+    for _, obj := range objs {
+        result += fmt.Sprintf("Found object at %s\n", obj.Path)
+        if obj.Data != nil {
+             for _, child := range obj.Data.Children {
+                 if child.Name == "VTODO" {
+                     summary := child.Props.Get(ical.PropSummary)
+                     if summary != nil {
+                         result += fmt.Sprintf("  Summary: %s\n", summary.Value)
+                     }
+                     status := child.Props.Get("STATUS")
+                     if status != nil {
+                         result += fmt.Sprintf("  Status: %s\n", status.Value)
+                     }
+                 }
+             }
+        }
+    }
+
+    if result == "" {
+        result = "No reminders found."
+    }
+
+    return &mcp.CallToolResult{
+        Content: []mcp.Content{&mcp.TextContent{Text: result}},
     }, nil, nil
 }

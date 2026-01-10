@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+    "io/ioutil"
 
 	"github.com/emersion/go-imap/client"
 	"github.com/emersion/go-imap"
@@ -88,15 +89,37 @@ func fetchMessages(mailbox string, limit int) (*mcp.CallToolResult, any, error) 
     seqset := new(imap.SeqSet)
     seqset.AddRange(from, to)
 
+    // We want the body
+    section := &imap.BodySectionName{}
+    items := []imap.FetchItem{imap.FetchEnvelope, section.FetchItem()}
+
     messages := make(chan *imap.Message, 10)
     done := make(chan error, 1)
     go func() {
-        done <- c.Fetch(seqset, []imap.FetchItem{imap.FetchEnvelope, "BODY[TEXT]"}, messages)
+        done <- c.Fetch(seqset, items, messages)
     }()
 
     var result string
     for msg := range messages {
-        result += fmt.Sprintf("Subject: %s\nDate: %v\n---\n", msg.Envelope.Subject, msg.Envelope.Date)
+        fromStr := ""
+        if len(msg.Envelope.From) > 0 {
+            addr := msg.Envelope.From[0]
+            fromStr = fmt.Sprintf("%s <%s@%s>", addr.PersonalName, addr.MailboxName, addr.HostName)
+        }
+
+        result += fmt.Sprintf("Subject: %s\nDate: %v\nFrom: %s\n", msg.Envelope.Subject, msg.Envelope.Date, fromStr)
+
+        r := msg.GetBody(section)
+        if r != nil {
+            bodyBytes, _ := ioutil.ReadAll(r)
+            body := string(bodyBytes)
+            // Truncate body if too long
+            if len(body) > 500 {
+                body = body[:500] + "..."
+            }
+            result += fmt.Sprintf("Body: %s\n", body)
+        }
+        result += "---\n"
     }
 
     if err := <-done; err != nil {
